@@ -1,0 +1,14 @@
+{
+  "name": "seoul-subway-congestion-ai",
+  "version": "1.0.0",
+  "description": "서울 지하철 혼잡도 AI 예측 웹서비스",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "csv-parse": "^5.5.0",
+    "cors": "^2.8.5"
+  }
+}

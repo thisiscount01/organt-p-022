@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>서울 지하철 혼잡도 AI — 지금 탈 수 있을까요?</title>
+  <script src="libs/chart.umd.min.js"></script>
+  <script src="libs/chartjs-plugin-annotation.min.js"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body data-view="predict">
+
+<!-- ── 콜드 스타트 오버레이 ──────────────────────────────── -->
+<div id="coldOverlay" style="position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(160deg,#0d1117 0%,#161b22 100%);padding:2rem;">
+  <div style="text-align:center;max-width:380px;width:100%;">
+    <div id="coldIcon" style="font-size:3.8rem;margin-bottom:1.25rem;">🚇</div>
+    <h1 style="font-size:1.45rem;font-weight:700;color:#e6edf3;margin:0 0 .5rem;font-family:'Pretendard',system-ui,sans-serif;letter-spacing:-.02em;">서울 지하철 혼잡도 AI</h1>
+    <p style="font-size:.875rem;color:#8b949e;margin:0 0 2.25rem;font-family:'Pretendard',system-ui,sans-serif;line-height:1.65;">서버 시동 중…&nbsp; 최초 접속 시 30초 내외 소요됩니다</p>
+    <div style="background:#21262d;border-radius:999px;height:8px;overflow:hidden;margin-bottom:.75rem;">
+      <div id="coldProgressBar" style="height:100%;width:0%;background:linear-gradient(90deg,#1f6feb 0%,#388bfd 100%);border-radius:999px;transition:width .35s cubic-bezier(.4,0,.2,1);"></div>
+    </div>
+    <p id="coldPctText" style="font-size:.78rem;color:#58a6ff;font-family:'Pretendard',system-ui,sans-serif;margin:0;">0%</p>
+  </div>
+</div>
+<style>
+  @keyframes _coldBounce {
+    0%,100%{transform:translateY(0) scale(1);}
+    45%{transform:translateY(-8px) scale(1.1);}
+    65%{transform:translateY(-3px) scale(1.05);}
+  }
+  #coldIcon{animation:_coldBounce 2s ease-in-out infinite;}
+</style>
+<script>
+(function(){
+  var bar  = document.getElementById('coldProgressBar');
+  var pctT = document.getElementById('coldPctText');
+  var val  = 0;
+  var iv   = setInterval(function(){
+    if(val >= 97){clearInterval(iv);return;}
+    /* 랜덤 증분: 0.3~2.8 — 초반 빠르게, 후반 느리게 */
+    var inc = (Math.random() * 2.5 + 0.3) * (1 - val / 140);
+    val = Math.min(val + inc, 97);
+    bar.style.width  = val.toFixed(1) + '%';
+    pctT.textContent = Math.round(val) + '%';
+  }, 550);
+
+  window.__hideColdOverlay = function(){
+    clearInterval(iv);
+    bar.style.width  = '100%';
+    pctT.textContent = '100%';
+    setTimeout(function(){
+      var overlay = document.getElementById('coldOverlay');
+      if(!overlay) return;
+      overlay.style.transition = 'opacity .5s ease';
+      overlay.style.opacity    = '0';
+      setTimeout(function(){
+        if(overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      }, 520);
+    }, 500);
+  };
+})();
+</script>
+
+<!-- ── 헤더 ─────────────────────────────────────────────── -->
+<header class="site-header">
+  <div class="header-inner">
+    <div class="site-brand">
+      <span class="brand-icon">🚇</span>
+      <div>
+        <h1 class="brand-title">서울 지하철 혼잡도 AI</h1>
+        <p class="brand-sub">실제 공공데이터 기반 · 과거 패턴 기반 예측</p>
+      </div>
+    </div>
+    <div class="header-stats" id="headerStats">
+      <span class="stat-chip" id="statStations">–</span>
+      <span class="stat-chip" id="statRecords">–</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── 뷰 탭 ─────────────────────────────────────────────── -->
+<nav class="view-nav">
+  <button class="view-tab active" data-target="predict">📊 예측·추천</button>
+  <button class="view-tab" data-target="heatmap">🌡️ 히트맵</button>
+  <button class="view-tab" data-target="compare">⚖️ 역 비교</button>
+  <button class="view-tab" data-target="realtime">🔴 실시간</button>
+</nav>
+
+<!-- ════════════════════════════════════════════════════════
+     뷰 1: 예측 · 추천
+════════════════════════════════════════════════════════ -->
+<section id="view-predict" class="view active">
+
+  <!-- 컨트롤 패널 -->
+  <div class="control-panel card">
+    <div class="control-row">
+
+      <!-- 노선 선택 -->
+      <div class="control-group">
+        <label class="ctrl-label">노선</label>
+        <div class="select-wrap">
+          <select id="lineSelect" class="ctrl-select">
+            <option value="">노선 선택…</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- 역 선택 (검색 자동완성) -->
+      <div class="control-group">
+        <label class="ctrl-label">역</label>
+        <div class="autocomplete-wrap">
+          <input
+            id="stationInput"
+            class="ctrl-input"
+            type="text"
+            placeholder="역 이름 검색…"
+            autocomplete="off"
+            disabled
+          />
+          <ul id="stationDropdown" class="autocomplete-list" hidden></ul>
+        </div>
+      </div>
+
+      <!-- 요일 탭 -->
+      <div class="control-group">
+        <label class="ctrl-label">요일</label>
+        <div class="day-tabs">
+          <button class="day-tab active" data-day="평일">평일</button>
+          <button class="day-tab" data-day="토요일">토</button>
+          <button class="day-tab" data-day="일요일">일</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- 방향 토글 -->
+    <div id="directionWrap" class="direction-wrap" hidden>
+      <label class="ctrl-label">방향</label>
+      <div id="directionBtns" class="direction-btns"></div>
+    </div>
+  </div>
+
+  <!-- 빈 상태 안내 -->
+  <div id="emptyState" class="empty-state">
+    <div class="empty-icon">🚇</div>
+    <p class="empty-title">노선과 역을 선택하면<br />AI 분석이 시작됩니다</p>
+    <p class="empty-sub">서울 지하철 1~8호선 실제 공공데이터 기반</p>
+  </div>
+
+  <!-- 결과 패널 (선택 후 표시) -->
+  <div id="resultPanel" class="result-grid" hidden>
+
+    <!-- 실시간 패널 (예측 뷰 내부) -->
+    <div class="card realtime-mini">
+      <div class="card-head">
+        <span class="card-icon">🔴</span>
+        <h2 class="card-title">지금 이 역</h2>
+        <span id="rtLiveTag" class="live-tag">LIVE</span>
+      </div>
+      <div id="rtMiniContent" class="rt-mini-grid">
+        <div class="rt-now">
+          <span class="rt-time-label" id="rtNowTime">–</span>
+          <div class="rt-bar-wrap">
+            <div id="rtNowBar" class="rt-bar" style="width:0%"></div>
+          </div>
+          <span class="rt-pct" id="rtNowPct">–</span>
+          <span class="rt-lv" id="rtNowLabel">–</span>
+        </div>
+        <div id="rtTrendArrow" class="rt-trend">→</div>
+        <div class="rt-next">
+          <span class="rt-time-label" id="rtNextTime">–</span>
+          <div class="rt-bar-wrap">
+            <div id="rtNextBar" class="rt-bar" style="width:0%"></div>
+          </div>
+          <span class="rt-pct" id="rtNextPct">–</span>
+          <span class="rt-lv" id="rtNextLabel">–</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI 추천 TOP3 -->
+    <div class="card recommend-card">
+      <div class="card-head">
+        <span class="card-icon">✨</span>
+        <h2 class="card-title">AI 추천 출발 시간</h2>
+        <span id="recGrade" class="grade-badge">–</span>
+      </div>
+      <div id="top3List" class="top3-list"></div>
+      <div id="nowVs30" class="now-vs-30" hidden>
+        <div class="vs-label">지금 vs 30분 후</div>
+        <div class="vs-row">
+          <div class="vs-item" id="vsNow"></div>
+          <div class="vs-divider">VS</div>
+          <div class="vs-item" id="vs30min"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI 코멘트 패널 -->
+    <div class="card insight-card">
+      <div class="card-head">
+        <span class="card-icon">🧠</span>
+        <h2 class="card-title">AI 패턴 분석</h2>
+        <span id="insightGrade" class="grade-badge">–</span>
+      </div>
+      <ul id="insightComments" class="insight-list"></ul>
+      <div id="peakPeriods" class="peak-chips"></div>
+    </div>
+
+    <!-- 24시간 타임라인 차트 -->
+    <div class="card chart-card">
+      <div class="card-head">
+        <span class="card-icon">📈</span>
+        <h2 class="card-title">24시간 혼잡도 타임라인</h2>
+        <div id="chartDirToggle" class="chart-dir-toggle"></div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="timelineChart"></canvas>
+      </div>
+      <div class="chart-legend">
+        <span class="legend-item" data-level="low">매우 쾌적 (0~29%)</span>
+        <span class="legend-item" data-level="medium">보통 (30~59%)</span>
+        <span class="legend-item" data-level="high">혼잡 (60~89%)</span>
+        <span class="legend-item" data-level="critical">매우 혼잡 (90%+)</span>
+      </div>
+    </div>
+
+  </div><!-- /result-grid -->
+</section>
+
+<!-- ════════════════════════════════════════════════════════
+     뷰 2: 히트맵
+════════════════════════════════════════════════════════ -->
+<section id="view-heatmap" class="view">
+  <div class="control-panel card">
+    <div class="control-row">
+      <div class="control-group">
+        <label class="ctrl-label">노선</label>
+        <div class="select-wrap">
+          <select id="heatmapLineSelect" class="ctrl-select">
+            <option value="">노선 선택…</option>
+          </select>
+        </div>
+      </div>
+      <div class="control-group">
+        <label class="ctrl-label">요일</label>
+        <div class="day-tabs">
+          <button class="day-tab active" data-day="평일">평일</button>
+          <button class="day-tab" data-day="토요일">토</button>
+          <button class="day-tab" data-day="일요일">일</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="heatmapEmpty" class="empty-state">
+    <div class="empty-icon">🌡️</div>
+    <p class="empty-title">노선을 선택하면<br />역×시간대 히트맵이 표시됩니다</p>
+  </div>
+
+  <div id="heatmapPanel" class="card heatmap-card" hidden>
+    <div class="card-head">
+      <span class="card-icon">🌡️</span>
+      <h2 class="card-title" id="heatmapTitle">히트맵</h2>
+    </div>
+    <div class="heatmap-legend-row">
+      <span class="legend-item" data-level="low">매우 쾌적</span>
+      <span class="legend-item" data-level="medium">보통</span>
+      <span class="legend-item" data-level="high">혼잡</span>
+      <span class="legend-item" data-level="critical">매우 혼잡</span>
+    </div>
+    <div class="heatmap-scroll">
+      <table id="heatmapTable" class="heatmap-table"></table>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════
+     뷰 3: 역 비교
+════════════════════════════════════════════════════════ -->
+<section id="view-compare" class="view">
+  <div class="control-panel card">
+    <div class="control-row">
+      <div class="control-group" style="flex:1">
+        <label class="ctrl-label">역 추가 (최대 4개)</label>
+        <div class="compare-input-wrap">
+          <div class="autocomplete-wrap">
+            <input
+              id="compareInput"
+              class="ctrl-input"
+              type="text"
+              placeholder="역 이름 입력…"
+              autocomplete="off"
+            />
+            <ul id="compareDropdown" class="autocomplete-list" hidden></ul>
+          </div>
+          <button id="compareAddBtn" class="btn-add">추가</button>
+        </div>
+      </div>
+      <div class="control-group">
+        <label class="ctrl-label">요일</label>
+        <div class="day-tabs">
+          <button class="day-tab active" data-day="평일">평일</button>
+          <button class="day-tab" data-day="토요일">토</button>
+          <button class="day-tab" data-day="일요일">일</button>
+        </div>
+      </div>
+    </div>
+    <div id="compareChips" class="compare-chips"></div>
+  </div>
+
+  <div id="compareEmpty" class="empty-state">
+    <div class="empty-icon">⚖️</div>
+    <p class="empty-title">역을 2개 이상 추가하면<br />비교 차트가 표시됩니다</p>
+  </div>
+
+  <div id="comparePanel" class="card chart-card" hidden>
+    <div class="card-head">
+      <span class="card-icon">⚖️</span>
+      <h2 class="card-title">역간 혼잡도 비교</h2>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="compareChart"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════
+     뷰 4: 실시간
+════════════════════════════════════════════════════════ -->
+<section id="view-realtime" class="view">
+  <div class="control-panel card">
+    <div class="control-row">
+      <div class="control-group">
+        <label class="ctrl-label">노선</label>
+        <div class="select-wrap">
+          <select id="rtLineSelect" class="ctrl-select">
+            <option value="">노선 선택…</option>
+          </select>
+        </div>
+      </div>
+      <div class="control-group">
+        <label class="ctrl-label">역</label>
+        <div class="autocomplete-wrap">
+          <input
+            id="rtStationInput"
+            class="ctrl-input"
+            type="text"
+            placeholder="역 이름 검색…"
+            autocomplete="off"
+            disabled
+          />
+          <ul id="rtStationDropdown" class="autocomplete-list" hidden></ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="rtEmpty" class="empty-state">
+    <div class="empty-icon">🔴</div>
+    <p class="empty-title">노선과 역을 선택하면<br />현재 시각 혼잡도가 표시됩니다</p>
+  </div>
+
+  <div id="rtFullPanel" class="view-realtime-grid" hidden>
+
+    <div class="card rt-big-card">
+      <div class="card-head">
+        <span class="card-icon">🔴</span>
+        <h2 class="card-title" id="rtFullTitle">실시간 혼잡도</h2>
+        <span class="live-tag">LIVE</span>
+      </div>
+      <div class="rt-big-display">
+        <div class="rt-big-pct" id="rtFullPct">–</div>
+        <div class="rt-big-level" id="rtFullLevel">–</div>
+        <div class="rt-big-time" id="rtFullTime">–</div>
+      </div>
+      <div class="rt-progress-wrap">
+        <div id="rtFullBar" class="rt-progress-bar" style="width:0%"></div>
+      </div>
+      <div class="rt-day-info" id="rtDayInfo">–</div>
+    </div>
+
+    <div class="card rt-trend-card">
+      <div class="card-head">
+        <span class="card-icon">📉</span>
+        <h2 class="card-title">다음 시간대 예측</h2>
+      </div>
+      <div class="rt-trend-body">
+        <div id="rtFullArrow" class="rt-trend-icon">→</div>
+        <div class="rt-trend-detail">
+          <div class="rt-trend-next-time" id="rtNextTimeLabel">–</div>
+          <div class="rt-trend-next-pct" id="rtNextPctFull">–</div>
+          <div class="rt-trend-next-level" id="rtNextLevelFull">–</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card rt-tip-card">
+      <div class="card-head">
+        <span class="card-icon">💡</span>
+        <h2 class="card-title">탑승 조언</h2>
+      </div>
+      <p id="rtTip" class="rt-tip-text">–</p>
+    </div>
+
+  </div>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>
